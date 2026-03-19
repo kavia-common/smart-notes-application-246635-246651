@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
+\restrict TsK673I3AZLqsR3xkO2Ndube35UUA9ioh4fa5DhO30yaLQhaEZ5I8ODxYd87yGR
 
 -- Dumped from database version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -28,9 +28,9 @@ CREATE DATABASE myapp WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDE
 
 ALTER DATABASE myapp OWNER TO appuser;
 
-\unrestrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
+\unrestrict TsK673I3AZLqsR3xkO2Ndube35UUA9ioh4fa5DhO30yaLQhaEZ5I8ODxYd87yGR
 \connect myapp
-\restrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
+\restrict TsK673I3AZLqsR3xkO2Ndube35UUA9ioh4fa5DhO30yaLQhaEZ5I8ODxYd87yGR
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -178,7 +178,7 @@ COPY public.notes (id, user_id, title, content, pinned, favorite, archived, dele
 --
 
 COPY public.schema_migrations (version, applied_at) FROM stdin;
-0001_initial	2026-03-19 05:38:47.631694+00
+0001_initial	2026-03-19 05:45:22.62368+00
 \.
 
 
@@ -561,5 +561,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL ON TABLES 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
+\unrestrict TsK673I3AZLqsR3xkO2Ndube35UUA9ioh4fa5DhO30yaLQhaEZ5I8ODxYd87yGR
 
