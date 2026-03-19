@@ -1,10 +1,29 @@
 #!/bin/bash
+set -Eeuo pipefail
 
 # Minimal PostgreSQL startup script with full paths
-DB_NAME="myapp"
-DB_USER="appuser"
-DB_PASSWORD="dbuser123"
-DB_PORT="5000"
+#
+# This script is responsible for:
+#  - starting PostgreSQL (or reusing an existing instance)
+#  - ensuring the database + role exist and have correct privileges
+#  - ensuring the Notes app schema exists and is up-to-date (tables, constraints, indexes, triggers)
+#
+# Conventions:
+#  - Writes a psql connection command to db_connection.txt
+#  - Writes a db_visualizer/postgres.env file for the bundled DB viewer
+
+# Allow orchestrator/runtime to override defaults via standard env vars.
+DB_NAME="${POSTGRES_DB:-myapp}"
+DB_USER="${POSTGRES_USER:-appuser}"
+DB_PASSWORD="${POSTGRES_PASSWORD:-dbuser123}"
+DB_PORT="${POSTGRES_PORT:-5000}"
+
+PGDATA_DIR="/var/lib/postgresql/data"
+
+on_error() {
+    echo "❌ startup.sh failed (line ${BASH_LINENO[0]}): ${BASH_COMMAND}" >&2
+}
+trap on_error ERR
 
 echo "Starting PostgreSQL setup..."
 
@@ -17,19 +36,63 @@ echo "Found PostgreSQL version: ${PG_VERSION}"
 # Track whether we should start a new server or reuse an existing one.
 POSTGRES_ALREADY_RUNNING="false"
 
+ensure_pg_networking() {
+    # Ensures Postgres listens on all interfaces and accepts password auth from other containers.
+    # This is important for multi-container (backend ↔ db) setups.
+    #
+    # Idempotent: uses a marker comment to avoid duplicate entries.
+
+    local conf="${PGDATA_DIR}/postgresql.conf"
+    local hba="${PGDATA_DIR}/pg_hba.conf"
+
+    if [ ! -f "${conf}" ] || [ ! -f "${hba}" ]; then
+        echo "PostgreSQL config files not found yet; networking config will be applied after initdb."
+        return 0
+    fi
+
+    # Ensure listen_addresses = '*'
+    if grep -Eq "^[#[:space:]]*listen_addresses[[:space:]]*=" "${conf}"; then
+        # Replace any existing listen_addresses line (commented or not)
+        sed -i "s/^[#[:space:]]*listen_addresses[[:space:]]*=.*/listen_addresses = '*'/" "${conf}"
+    else
+        echo "listen_addresses = '*'" >> "${conf}"
+    fi
+
+    # Ensure we can connect from other containers using password auth.
+    if ! grep -q "kavia-notes-app: remote access" "${hba}"; then
+        cat >> "${hba}" <<'EOF'
+
+# kavia-notes-app: remote access (password auth) for inter-container connectivity
+host    all             all             0.0.0.0/0               md5
+host    all             all             ::/0                    md5
+EOF
+    fi
+}
+
 ensure_schema() {
     echo "Ensuring notes app schema exists (users/notes/tags/note_tags, indexes, timestamps)..."
 
     # Use ON_ERROR_STOP so any failure aborts and returns non-zero.
-    # Use a single psql session so we can SET ROLE for correct object ownership.
+    # Use a single psql session so we can serialize init and adjust ownership deterministically.
     sudo -u postgres ${PG_BIN}/psql -p ${DB_PORT} -d ${DB_NAME} \
         -v ON_ERROR_STOP=1 \
         -v app_user="${DB_USER}" <<'SQL'
+-- Serialize schema initialization to avoid concurrent DDL (e.g., if startup runs twice).
+-- Session-level advisory locks are automatically released when this session ends.
+SELECT pg_advisory_lock(716483219);
+
 -- Needed for gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- Create application objects as the application role so ownership is correct.
+-- Track schema version (lightweight "migrations/init approach" marker)
+-- Created as the application role for normal ownership.
 SET ROLE :"app_user";
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO public.schema_migrations(version) VALUES ('0001_initial')
+ON CONFLICT (version) DO NOTHING;
 
 -- Generic updated_at trigger function used by multiple tables
 CREATE OR REPLACE FUNCTION public.set_updated_at()
@@ -72,8 +135,7 @@ CREATE TABLE IF NOT EXISTS public.tags (
     user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT tags_name_nonempty CHECK (char_length(btrim(name)) > 0)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Many-to-many relationship between notes and tags
@@ -84,8 +146,67 @@ CREATE TABLE IF NOT EXISTS public.note_tags (
     PRIMARY KEY (note_id, tag_id)
 );
 
+-- If tables existed from older init scripts, make sure new columns exist (idempotent).
+ALTER TABLE public.users
+    ADD COLUMN IF NOT EXISTS display_name TEXT,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE public.notes
+    ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS favorite BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE public.tags
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Ensure important CHECK constraints exist (Postgres doesn't support ADD CONSTRAINT IF NOT EXISTS)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'users_email_nonempty'
+          AND conrelid = 'public.users'::regclass
+    ) THEN
+        ALTER TABLE public.users
+            ADD CONSTRAINT users_email_nonempty
+            CHECK (char_length(btrim(email)) > 0);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'tags_name_nonempty'
+          AND conrelid = 'public.tags'::regclass
+    ) THEN
+        ALTER TABLE public.tags
+            ADD CONSTRAINT tags_name_nonempty
+            CHECK (char_length(btrim(name)) > 0);
+    END IF;
+END
+$$;
+
+-- Switch back to superuser context to enforce ownership deterministically
+RESET ROLE;
+
+-- Ensure app role owns the core objects so it can manage triggers/indexes going forward
+ALTER TABLE IF EXISTS public.schema_migrations OWNER TO :"app_user";
+ALTER FUNCTION IF EXISTS public.set_updated_at() OWNER TO :"app_user";
+ALTER TABLE IF EXISTS public.users OWNER TO :"app_user";
+ALTER TABLE IF EXISTS public.notes OWNER TO :"app_user";
+ALTER TABLE IF EXISTS public.tags OWNER TO :"app_user";
+ALTER TABLE IF EXISTS public.note_tags OWNER TO :"app_user";
+
+-- Create indexes / triggers as the application role (owner), idempotently.
+SET ROLE :"app_user";
+
 -- =========
--- Indexes / constraints (idempotent)
+-- Indexes (idempotent)
 -- =========
 
 -- Case-insensitive uniqueness for user email
@@ -147,12 +268,10 @@ BEFORE UPDATE ON public.tags
 FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 RESET ROLE;
-SQL
 
-    if [ $? -ne 0 ]; then
-        echo "❌ Schema initialization failed"
-        exit 1
-    fi
+-- Release advisory lock
+SELECT pg_advisory_unlock(716483219);
+SQL
 
     echo "✓ Schema ensured."
 }
@@ -191,38 +310,44 @@ fi
 
 if [ "${POSTGRES_ALREADY_RUNNING}" != "true" ]; then
     # Initialize PostgreSQL data directory if it doesn't exist
-    if [ ! -f "/var/lib/postgresql/data/PG_VERSION" ]; then
+    if [ ! -f "${PGDATA_DIR}/PG_VERSION" ]; then
         echo "Initializing PostgreSQL..."
-        sudo -u postgres ${PG_BIN}/initdb -D /var/lib/postgresql/data
+        sudo -u postgres ${PG_BIN}/initdb -D "${PGDATA_DIR}"
     fi
 
-    # Start PostgreSQL server in background
-    echo "Starting PostgreSQL server..."
-    sudo -u postgres ${PG_BIN}/postgres -D /var/lib/postgresql/data -p ${DB_PORT} &
+    # Apply networking config (idempotent)
+    ensure_pg_networking
 
-    # Wait for PostgreSQL to start
+    # Start PostgreSQL server in background.
+    # -h 0.0.0.0 is important so other containers can connect over the network.
+    echo "Starting PostgreSQL server..."
+    sudo -u postgres ${PG_BIN}/postgres -D "${PGDATA_DIR}" -p "${DB_PORT}" -h 0.0.0.0 &
+
+    # Wait briefly before readiness checks
     echo "Waiting for PostgreSQL to start..."
-    sleep 5
+    sleep 2
 else
     echo "Reusing existing PostgreSQL server on port ${DB_PORT}..."
 fi
 
 # Check if PostgreSQL is running/ready
-for i in {1..15}; do
+for i in {1..30}; do
     if sudo -u postgres ${PG_BIN}/pg_isready -p ${DB_PORT} > /dev/null 2>&1; then
         echo "PostgreSQL is ready!"
         break
     fi
-    echo "Waiting... ($i/15)"
-    sleep 2
+    echo "Waiting... ($i/30)"
+    sleep 1
 done
 
 # Create database and user
 echo "Setting up database and user..."
+
+# Create DB (idempotent)
 sudo -u postgres ${PG_BIN}/createdb -p ${DB_PORT} ${DB_NAME} 2>/dev/null || echo "Database might already exist"
 
 # Set up user and permissions with proper schema ownership
-sudo -u postgres ${PG_BIN}/psql -p ${DB_PORT} -d postgres << EOF
+sudo -u postgres ${PG_BIN}/psql -p ${DB_PORT} -d postgres -v ON_ERROR_STOP=1 << EOF
 -- Create user if doesn't exist
 DO \$\$
 BEGIN
@@ -233,11 +358,14 @@ BEGIN
 END
 \$\$;
 
+-- Make app user the DB owner (helps with future DDL/trigger management)
+ALTER DATABASE ${DB_NAME} OWNER TO ${DB_USER};
+
 -- Grant database-level permissions
 GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
 
 -- Connect to the specific database for schema-level permissions
-\c ${DB_NAME}
+\\c ${DB_NAME}
 
 -- For PostgreSQL 15+, we need to handle public schema permissions differently
 -- First, grant usage on public schema
@@ -262,13 +390,13 @@ GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO ${DB_USER};
 EOF
 
 # Additionally, connect to the specific database to ensure permissions
-sudo -u postgres ${PG_BIN}/psql -p ${DB_PORT} -d ${DB_NAME} << EOF
+sudo -u postgres ${PG_BIN}/psql -p ${DB_PORT} -d ${DB_NAME} -v ON_ERROR_STOP=1 << EOF
 -- Double-check permissions are set correctly in the target database
 GRANT ALL ON SCHEMA public TO ${DB_USER};
 GRANT CREATE ON SCHEMA public TO ${DB_USER};
 
 -- Show current permissions for debugging
-\dn+ public
+\\dn+ public
 EOF
 
 # Ensure the full application schema exists.
