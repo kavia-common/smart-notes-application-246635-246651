@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict dzc6LZAZXFlEELs7IoE9KuNLA8yEZEdQ17mJfPvUvAvE2Nxpm2uzidmkLBx1Uqb
+\restrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
 
 -- Dumped from database version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -28,9 +28,9 @@ CREATE DATABASE myapp WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDE
 
 ALTER DATABASE myapp OWNER TO appuser;
 
-\unrestrict dzc6LZAZXFlEELs7IoE9KuNLA8yEZEdQ17mJfPvUvAvE2Nxpm2uzidmkLBx1Uqb
+\unrestrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
 \connect myapp
-\restrict dzc6LZAZXFlEELs7IoE9KuNLA8yEZEdQ17mJfPvUvAvE2Nxpm2uzidmkLBx1Uqb
+\restrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -178,7 +178,7 @@ COPY public.notes (id, user_id, title, content, pinned, favorite, archived, dele
 --
 
 COPY public.schema_migrations (version, applied_at) FROM stdin;
-0001_initial	2026-03-19 05:27:17.740534+00
+0001_initial	2026-03-19 05:38:47.631694+00
 \.
 
 
@@ -236,97 +236,6 @@ ALTER TABLE ONLY public.tags
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-
-
---
--- Name: idx_note_tags_tag_id; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_note_tags_tag_id ON public.note_tags USING btree (tag_id);
-
-
---
--- Name: idx_notes_search_gin; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_notes_search_gin ON public.notes USING gin (to_tsvector('english'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text)))) WHERE (deleted_at IS NULL);
-
-
---
--- Name: idx_notes_user_archived; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_notes_user_archived ON public.notes USING btree (user_id) WHERE ((archived = true) AND (deleted_at IS NULL));
-
-
---
--- Name: idx_notes_user_favorite; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_notes_user_favorite ON public.notes USING btree (user_id) WHERE ((favorite = true) AND (deleted_at IS NULL));
-
-
---
--- Name: idx_notes_user_id; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_notes_user_id ON public.notes USING btree (user_id);
-
-
---
--- Name: idx_notes_user_pinned; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_notes_user_pinned ON public.notes USING btree (user_id) WHERE ((pinned = true) AND (deleted_at IS NULL));
-
-
---
--- Name: idx_notes_user_updated_at; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_notes_user_updated_at ON public.notes USING btree (user_id, updated_at DESC);
-
-
---
--- Name: idx_tags_user_id; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE INDEX idx_tags_user_id ON public.tags USING btree (user_id);
-
-
---
--- Name: idx_tags_user_name_ci; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE UNIQUE INDEX idx_tags_user_name_ci ON public.tags USING btree (user_id, lower(name));
-
-
---
--- Name: idx_users_email_ci; Type: INDEX; Schema: public; Owner: appuser
---
-
-CREATE UNIQUE INDEX idx_users_email_ci ON public.users USING btree (lower(email));
-
-
---
--- Name: notes trg_notes_set_updated_at; Type: TRIGGER; Schema: public; Owner: appuser
---
-
-CREATE TRIGGER trg_notes_set_updated_at BEFORE UPDATE ON public.notes FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: tags trg_tags_set_updated_at; Type: TRIGGER; Schema: public; Owner: appuser
---
-
-CREATE TRIGGER trg_tags_set_updated_at BEFORE UPDATE ON public.tags FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: users trg_users_set_updated_at; Type: TRIGGER; Schema: public; Owner: appuser
---
-
-CREATE TRIGGER trg_users_set_updated_at BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --
@@ -652,5 +561,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL ON TABLES 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict dzc6LZAZXFlEELs7IoE9KuNLA8yEZEdQ17mJfPvUvAvE2Nxpm2uzidmkLBx1Uqb
+\unrestrict aaEhtfklYM6oPk47k0z2buMYiEjjbxwnYAhtXa2qrU3yn0HdkcClc2LamZQRfKT
 
